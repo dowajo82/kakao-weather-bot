@@ -1,0 +1,37 @@
+name: Daily Kakao Weather
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 22 * * *'
+
+jobs:
+  send-weather:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 코드 가져오기
+        uses: actions/checkout@v4
+
+      - name: 파이썬 설치
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: 필요한 패키지 설치
+        run: pip install -r requirements.txt
+
+      - name: .env 파일 만들기
+        run: |
+          cat > .env << 'EOF'
+          ${{ secrets.ENV_FILE }}
+          EOF
+
+      - name: tokens.json 파일 만들기
+        run: |
+          cat > tokens.json << 'EOF'
+          ${{ secrets.TOKENS_JSON }}
+          EOF
+
+      - name: 날씨 카카오톡 보내기
+        run: python Kakao_weather_bot.py send-now
