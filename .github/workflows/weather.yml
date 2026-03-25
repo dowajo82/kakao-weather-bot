@@ -3,7 +3,7 @@ name: Daily Kakao Weather
 on:
   workflow_dispatch:
   schedule:
-    - cron: '0 22 * * *'
+    - cron: '7 22 * * *'
 
 jobs:
   send-weather:
