@@ -34,4 +34,8 @@ jobs:
           EOF
 
       - name: 날씨 카카오톡 보내기
+        env:
+          KMA_SERVICE_KEY: ${{ secrets.KMA_SERVICE_KEY }}
+          KMA_NX: ${{ secrets.KMA_NX }}
+          KMA_NY: ${{ secrets.KMA_NY }}
         run: python Kakao_weather_bot.py send-now
