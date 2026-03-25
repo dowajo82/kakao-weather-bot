@@ -1,6 +1,6 @@
 import json
 import os
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from urllib.parse import urlencode
 
@@ -8,9 +8,139 @@ import requests
 from apscheduler.schedulers.blocking import BlockingScheduler
 from dotenv import load_dotenv
 from flask import Flask, redirect, request
-
+from zoneinfo import ZoneInfo
 load_dotenv()
 
+from zoneinfo import ZoneInfo
+load_dotenv()
+
+KST = ZoneInfo("Asia/Seoul")
+
+KMA_SERVICE_KEY = os.environ["KMA_SERVICE_KEY"]
+KMA_NX = os.environ["KMA_NX"]
+KMA_NY = os.environ["KMA_NY"]
+
+ULTRA_NCST_URL = "http://apis.data.go.kr/1360000/VilageFcstInfoService_2.0/getUltraSrtNcst"
+VILAGE_FCST_URL = "http://apis.data.go.kr/1360000/VilageFcstInfoService_2.0/getVilageFcst"
+
+SKY_MAP = {
+    "1": "맑음",
+    "3": "구름많음",
+    "4": "흐림",
+}
+
+PTY_MAP = {
+    "0": "",
+    "1": "비",
+    "2": "비/눈",
+    "3": "눈",
+    "4": "소나기",
+    "5": "빗방울",
+    "6": "빗방울/눈날림",
+    "7": "눈날림",
+}
+
+def fetch_kma(url, base_date, base_time, nx, ny):
+    params = {
+        "serviceKey": KMA_SERVICE_KEY,
+        "pageNo": "1",
+        "numOfRows": "1000",
+        "dataType": "JSON",
+        "base_date": base_date,
+        "base_time": base_time,
+        "nx": str(nx),
+        "ny": str(ny),
+    }
+    res = requests.get(url, params=params, timeout=20)
+    res.raise_for_status()
+    data = res.json()
+
+    header = data["response"]["header"]
+    if header["resultCode"] != "00":
+        raise RuntimeError(f'KMA API 오류: {header["resultCode"]} {header["resultMsg"]}')
+
+    return data["response"]["body"]["items"]["item"]
+
+def get_latest_ncst_base(now):
+    base = now.replace(minute=0, second=0, microsecond=0) - timedelta(hours=1)
+    return base.strftime("%Y%m%d"), base.strftime("%H00")
+
+def get_latest_vilage_base(now):
+    candidates = [2, 5, 8, 11, 14, 17, 20, 23]
+    today_candidates = [h for h in candidates if h <= now.hour]
+
+    if today_candidates:
+        h = today_candidates[-1]
+        base = now.replace(hour=h, minute=0, second=0, microsecond=0)
+    else:
+        yesterday = now - timedelta(days=1)
+        base = yesterday.replace(hour=23, minute=0, second=0, microsecond=0)
+
+    return base.strftime("%Y%m%d"), base.strftime("%H00")
+
+def build_weather_message():
+    now = datetime.now(KST)
+
+    ncst_date, ncst_time = get_latest_ncst_base(now)
+    ncst_items = fetch_kma(ULTRA_NCST_URL, ncst_date, ncst_time, KMA_NX, KMA_NY)
+    ncst = {item["category"]: item["obsrValue"] for item in ncst_items}
+
+    current_temp = ncst.get("T1H", "-")
+    current_humidity = ncst.get("REH", "-")
+    current_wind = ncst.get("WSD", "-")
+
+    fcst_date, fcst_time = get_latest_vilage_base(now)
+    fcst_items = fetch_kma(VILAGE_FCST_URL, fcst_date, fcst_time, KMA_NX, KMA_NY)
+
+    grouped = {}
+    for item in fcst_items:
+        key = (item["fcstDate"], item["fcstTime"])
+        grouped.setdefault(key, {})
+        grouped[key][item["category"]] = item["fcstValue"]
+
+    today = now.strftime("%Y%m%d")
+    today_rows = [v for (d, _), v in grouped.items() if d == today]
+    tmn = next((row["TMN"] for row in today_rows if "TMN" in row), "-")
+    tmx = next((row["TMX"] for row in today_rows if "TMX" in row), "-")
+
+    future_keys = []
+    for d, t in grouped.keys():
+        dt = datetime.strptime(d + t, "%Y%m%d%H%M").replace(tzinfo=KST)
+        if dt >= now:
+            future_keys.append((dt, d, t))
+
+    if future_keys:
+        future_keys.sort()
+        _, next_date, next_time = future_keys[0]
+        next_fcst = grouped[(next_date, next_time)]
+
+        tmp = next_fcst.get("TMP", "-")
+        pop = next_fcst.get("POP", "-")
+        sky = next_fcst.get("SKY", "")
+        pty = next_fcst.get("PTY", "0")
+
+        if pty != "0":
+            weather_text = PTY_MAP.get(pty, "강수")
+        else:
+            weather_text = SKY_MAP.get(sky, "정보없음")
+
+        next_time_text = f"{next_time[:2]}:{next_time[2:]}"
+    else:
+        tmp = "-"
+        pop = "-"
+        weather_text = "정보없음"
+        next_time_text = "-"
+
+    msg = (
+        f"📍오늘 날씨\n"
+        f"현재 기온: {current_temp}°C\n"
+        f"습도: {current_humidity}%\n"
+        f"풍속: {current_wind}m/s\n"
+        f"오늘 최저/최고: {tmn}°C / {tmx}°C\n"
+        f"다음 예보({next_time_text}): {weather_text}, {tmp}°C, 강수확률 {pop}%"
+    )
+    return msg
+    
 # -----------------------------
 # Environment variables
 # -----------------------------
@@ -287,8 +417,7 @@ def send_kakao_memo(text: str) -> dict:
 # Main job
 # -----------------------------
 def send_today_weather() -> None:
-    weather = get_weather()
-    message = build_message(weather)
+    message = build_weather_message()
     result = send_kakao_memo(message)
     print(f"[{datetime.now().isoformat()}] sent: {result}")
     print(message)
